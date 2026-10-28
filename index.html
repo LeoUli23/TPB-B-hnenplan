@@ -10,6 +10,7 @@
 <title>Bühnenplaner — Philharmonic Brass</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
 <style>
   :root{
     --ink:#15171c; --ink2:#1e2128; --ink3:#272b34; --line:#363b46;
@@ -157,6 +158,13 @@
     transform:translateX(-50%) translateY(20px);background:#000;color:#fff;
     padding:10px 16px;border-radius:22px;font-size:13px;opacity:0;transition:.25s;z-index:200;pointer-events:none}
   .toast.show{opacity:.95;transform:translateX(-50%) translateY(0)}
+  #cloudBtn.on{border-color:var(--brass);color:var(--brass)}
+  .cnote{font-size:13px;color:var(--muted);line-height:1.5;margin:0 0 10px}
+  .cnote b{color:var(--text)}
+  .cerr{font-size:13px;color:#f1b3a9;line-height:1.5;margin:6px 0 10px}
+  .field select{width:100%;background:var(--ink3);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:11px;font-size:15px}
+  .field input[type=email]{width:100%;background:var(--ink3);border:1px solid var(--line);color:var(--text);border-radius:9px;padding:11px;font-size:16px}
+  .prog-row .pn{white-space:normal}
   @media(min-width:560px){.palette{grid-template-columns:repeat(3,1fr)}.sheet{left:50%;right:auto;width:520px;transform:translate(-50%,110%)}.sheet.open{transform:translate(-50%,0)}}
 </style>
 </head>
@@ -172,6 +180,7 @@
   <button class="btn" id="ensembleBtn">Ensemble laden</button>
   <button class="btn" id="stageBtn">Bühne</button>
   <button class="btn" id="progBtn">Aufstellungen</button>
+  <button class="btn" id="cloudBtn">TPB-App</button>
   <button class="btn primary" id="pdfBtn">PDF</button>
 </div>
 
@@ -274,6 +283,13 @@
     <button class="btn" id="importJson">Laden (Datei)</button>
   </div>
   <input type="file" id="fileInput" accept="application/json" style="display:none">
+</div>
+
+<!-- TPB-App sheet -->
+<div class="sheet" id="cloudSheet">
+  <div class="grab"></div>
+  <h3>TPB-App · gemeinsame Aufstellungen</h3>
+  <div id="cloudBody"></div>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -1075,7 +1091,7 @@ document.getElementById("bgFit").onclick=async ()=>{
 document.getElementById("progName").addEventListener("input",e=>{ current().name=e.target.value||"Aufstellung"; saveStore(); renderProgSelect(); renderProgList(); });
 document.getElementById("newProg").onclick=()=>{ newProgram(); document.getElementById("progName").value=current().name; renderProgList(); };
 document.getElementById("dupProg").onclick=()=>{ const p=current();
-  const n={...JSON.parse(JSON.stringify(p)),id:uid(),name:p.name+" (Kopie)"};
+  const n={...JSON.parse(JSON.stringify(p)),id:uid(),name:p.name+" (Kopie)"}; delete n.cloudId; delete n.cloudAt;
   store.programs.push(n); store.currentId=n.id; saveStore(); renderAll();
   document.getElementById("progName").value=n.name; renderProgList(); };
 document.getElementById("exportJson").onclick=exportJSON;
@@ -1089,12 +1105,194 @@ function renderAll(){ renderProgSelect(); renderStage(); }
 window.addEventListener("resize",()=>renderStage());
 stageEl.addEventListener("pointerdown",e=>{ if(e.target===stageEl){ selId=null; renderStage(); }});
 
+/* ---------- TPB-App: gemeinsame Aufstellungen (Supabase) ---------- */
+const SB_URL="https://vibrpjzjwpzifpljjukp.supabase.co";
+const SB_KEY="sb_publishable_lVHKTlObiihOnrm-724Wdg_oPmVxItB";
+const APP_URL="https://leouli23.github.io/TPB-App/beta/";
+let sb=null;
+const cloud={state:"aus", me:null, email:"", canEdit:false, plans:[], projects:[], login:{step:"email",email:"",msg:"",err:""}, busy:false, missing:false};
+function escH(s){ return String(s==null?"":s).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function cloudErr(e){
+  const m=(e&&(e.message||e.msg))||String(e||"");
+  if(/stage_plans|relation .* does not exist|PGRST205|schema cache/i.test(m)) return "Die gemeinsame Ablage ist noch nicht eingerichtet.";
+  if(/row-level security|permission denied|42501/i.test(m)) return "Dafür fehlen die Rechte (nur Leitung, Pauke und Schlagzeug).";
+  if(/check constraint|too large|413|payload/i.test(m)) return "Die Aufstellung ist zu groß. Bitte den Hintergrund-Plan entfernen oder ein kleineres Bild nehmen.";
+  if(/fetch|network|Load failed/i.test(m)) return "Keine Verbindung. Bitte später noch einmal versuchen.";
+  return "Das hat nicht geklappt. Bitte später noch einmal versuchen.";
+}
+function fmtDate(s){ try{ return new Date(s).toLocaleDateString("de-DE",{day:"2-digit",month:"2-digit",year:"numeric"}); }catch(_){ return ""; } }
+function planPayload(p){
+  return { title:(p.name||"Aufstellung").trim().slice(0,120)||"Aufstellung",
+    data:{ v:1, stageW:p.stageW, stageD:p.stageD, snap:!!p.snap, showGrid:p.showGrid,
+      bgOpacity:(p.bg&&p.bg.opacity!=null)?p.bg.opacity:1, items:p.items },
+    background:(p.bg&&p.bg.data)||null };
+}
+async function cloudInit(){
+  if(!window.supabase||!window.supabase.createClient){ cloud.state="offline"; return; }
+  sb=window.supabase.createClient(SB_URL,SB_KEY,{auth:{persistSession:true,autoRefreshToken:true,detectSessionInUrl:false,storageKey:"tpb-auth"}});
+  await cloudLoad();
+  const params=new URLSearchParams(location.search);
+  const want=params.get("plan");
+  if(want){
+    if(cloud.state==="ok") await cloudOpen(want,true);
+    else { toast("Bitte zuerst in der TPB-App anmelden"); openSheet("cloudSheet"); }
+  }
+}
+async function cloudLoad(){
+  if(!sb) return;
+  try{
+    const u=await sb.auth.getUser();
+    if(u.error||!u.data||!u.data.user){ cloud.state="login"; cloud.me=null; renderCloud(); return; }
+    cloud.email=u.data.user.email||"";
+    const r=await sb.from("members").select("id,name,register,is_leitung,active").eq("user_id",u.data.user.id).maybeSingle();
+    if(r.error) throw r.error;
+    if(!r.data||!r.data.active){ cloud.state="noaccess"; renderCloud(); return; }
+    cloud.me=r.data;
+    cloud.canEdit=!!(r.data.is_leitung||r.data.register==="Pauke"||r.data.register==="Schlagzeug");
+    const [pl,pr]=await Promise.all([
+      sb.from("stage_plans").select("id,title,project_id,updated_at").order("updated_at",{ascending:false}),
+      sb.from("projects").select("id,title,start_date").order("start_date",{ascending:true,nullsFirst:false})
+    ]);
+    if(pr.error) throw pr.error;
+    cloud.projects=pr.data||[];
+    if(pl.error){ cloud.missing=/stage_plans|PGRST205|does not exist|schema cache/i.test(pl.error.message||""); if(!cloud.missing) throw pl.error; cloud.plans=[]; }
+    else { cloud.missing=false; cloud.plans=pl.data||[]; }
+    cloud.state="ok";
+  }catch(e){ console.error(e); cloud.state="fehler"; cloud.errText=cloudErr(e); }
+  renderCloud();
+}
+function projTitle(id){ const p=cloud.projects.find(x=>x.id===id); return p?p.title:""; }
+function renderCloud(){
+  const box=document.getElementById("cloudBody"); if(!box) return;
+  const btn=document.getElementById("cloudBtn");
+  if(btn) btn.classList.toggle("on", cloud.state==="ok");
+  let h="";
+  if(cloud.state==="offline"){
+    h='<p class="cnote">Die Verbindung zur TPB-App konnte nicht geladen werden. Bitte Internet prüfen und den Bühnenplaner neu öffnen.</p>';
+  } else if(cloud.state==="aus"){
+    h='<p class="cnote">Verbinde …</p>';
+  } else if(cloud.state==="login"){
+    const L=cloud.login;
+    h='<p class="cnote">Melde dich mit der Adresse an, mit der du in der TPB-App eingetragen bist. Du bekommst einen Code per E-Mail. Bist du in der TPB-App auf diesem Gerät schon angemeldet, öffne den Bühnenplaner am besten von dort.</p>';
+    if(L.step==="email"){
+      h+='<div class="field"><label for="cEmail">E-Mail-Adresse</label><input type="email" id="cEmail" inputmode="email" autocomplete="email" autocapitalize="none" spellcheck="false" value="'+escH(L.email)+'"></div>'+
+        (L.err?'<p class="cerr">'+escH(L.err)+'</p>':'')+
+        '<div class="sheet-actions"><button class="btn primary" data-c="code-req">Code anfordern</button></div>';
+    } else {
+      h+='<p class="cnote">Code an <b>'+escH(L.email)+'</b> geschickt (sonst im Spam-Ordner nachsehen).</p>'+
+        '<div class="field"><label for="cCode">Code aus der E-Mail</label><input type="text" id="cCode" inputmode="numeric" autocomplete="one-time-code" maxlength="10"></div>'+
+        (L.err?'<p class="cerr">'+escH(L.err)+'</p>':'')+
+        '<div class="sheet-actions"><button class="btn primary" data-c="code-ok">Anmelden</button><button class="btn" data-c="code-back">Andere Adresse</button></div>';
+    }
+  } else if(cloud.state==="noaccess"){
+    h='<p class="cnote">Angemeldet als <b>'+escH(cloud.email)+'</b>, aber dieses Konto ist nicht für die TPB-App freigeschaltet. Bitte an die Leitung wenden.</p><div class="sheet-actions"><button class="btn" data-c="logout">Abmelden</button></div>';
+  } else if(cloud.state==="fehler"){
+    h='<p class="cerr">'+escH(cloud.errText||"Fehler")+'</p><div class="sheet-actions"><button class="btn" data-c="reload">Erneut versuchen</button></div>';
+  } else {
+    const p=current();
+    const linked=p.cloudId && cloud.plans.some(x=>x.id===p.cloudId);
+    h='<p class="cnote">Angemeldet als <b>'+escH(cloud.me.name)+'</b>'+(cloud.canEdit?' · darf speichern':' · nur ansehen')+'</p>';
+    if(cloud.missing){
+      h+='<p class="cerr">Die gemeinsame Ablage ist noch nicht eingerichtet. Deine Aufstellungen bleiben bis dahin auf diesem Gerät.</p>';
+    } else if(cloud.canEdit){
+      const opts='<option value="">ohne Projekt</option>'+cloud.projects.map(x=>'<option value="'+x.id+'"'+(p.cloudProject===x.id?' selected':'')+'>'+escH(x.title)+'</option>').join("");
+      h+='<div class="cat">Aktuelle Aufstellung: '+escH(p.name)+'</div>'+
+        '<div class="field"><label for="cProj">Gehört zu Projekt</label><select id="cProj">'+opts+'</select></div>'+
+        '<div class="sheet-actions">'+(linked
+          ?'<button class="btn primary" data-c="save">Änderungen speichern</button><button class="btn" data-c="save-new">Als neue speichern</button>'
+          :'<button class="btn primary" data-c="save-new">In TPB-App speichern</button>')+'</div>';
+    }
+    if(!cloud.missing){
+      h+='<div class="cat">In der TPB-App ('+cloud.plans.length+') · tippen zum Öffnen</div>';
+      h+= cloud.plans.length ? cloud.plans.map(x=>{
+        const sub=[projTitle(x.project_id), "Stand "+fmtDate(x.updated_at)].filter(Boolean).join(" · ");
+        return '<div class="prog-row'+(p.cloudId===x.id?' active':'')+'"><div class="pn" data-c="open" data-id="'+x.id+'">'+escH(x.title)+'<br><span class="pc">'+escH(sub)+'</span></div>'+
+          (cloud.canEdit?'<button class="mini dl" data-c="del" data-id="'+x.id+'" title="Aus TPB-App löschen">🗑</button>':'')+'</div>';
+      }).join("") : '<p class="cnote">Noch keine Aufstellung in der TPB-App.'+(cloud.canEdit?' Entwirf eine und tippe oben auf „In TPB-App speichern“.':'')+'</p>';
+    }
+    h+='<div class="sheet-actions"><button class="btn" data-c="reload">Aktualisieren</button><button class="btn" data-c="logout">Abmelden</button></div>';
+  }
+  box.innerHTML=h;
+}
+async function cloudOpen(id, fromLink){
+  try{
+    const r=await sb.from("stage_plans").select("id,title,project_id,data,background,updated_at").eq("id",id).maybeSingle();
+    if(r.error) throw r.error;
+    if(!r.data){ toast("Diese Aufstellung gibt es nicht mehr"); return; }
+    const d=r.data.data||{};
+    let p=store.programs.find(x=>x.cloudId===id);
+    if(!p){ p={id:uid(), cloudId:id}; store.programs.push(p); }
+    p.name=r.data.title; p.cloudProject=r.data.project_id||null; p.cloudAt=r.data.updated_at;
+    p.stageW=+d.stageW||1400; p.stageD=+d.stageD||1000; p.snap=d.snap!==false;
+    p.items=Array.isArray(d.items)?d.items:[];
+    if(r.data.background){ p.bg={data:r.data.background, opacity:d.bgOpacity!=null?d.bgOpacity:1}; p.showGrid=d.showGrid===true; }
+    else { delete p.bg; p.showGrid=d.showGrid!==false; }
+    store.currentId=p.id; selId=null; saveStore(); renderAll();
+    if(!fromLink) closeSheets();
+    toast("„"+r.data.title+"“ geöffnet");
+    renderCloud();
+  }catch(e){ console.error(e); toast(cloudErr(e)); }
+}
+async function cloudSave(asNew){
+  if(cloud.busy) return; cloud.busy=true;
+  const p=current(); const pay=planPayload(p); const update=!asNew && !!p.cloudId;
+  const sel=document.getElementById("cProj"); pay.project_id=sel&&sel.value?sel.value:null;
+  try{
+    let r;
+    if(update){ r=await sb.from("stage_plans").update(pay).eq("id",p.cloudId).select("id,updated_at").maybeSingle(); }
+    else { r=await sb.from("stage_plans").insert(pay).select("id,updated_at").single(); }
+    if(r.error) throw r.error;
+    if(!r.data) throw new Error("permission denied");
+    p.cloudId=r.data.id; p.cloudAt=r.data.updated_at; p.cloudProject=pay.project_id; saveStore();
+    toast(update?"Änderungen gespeichert":"In TPB-App gespeichert");
+    await cloudLoad();
+  }catch(e){ console.error(e); toast(cloudErr(e)); }
+  finally{ cloud.busy=false; }
+}
+async function cloudDelete(id){
+  const x=cloud.plans.find(q=>q.id===id); if(!x) return;
+  if(!confirm("„"+x.title+"“ aus der TPB-App löschen? Für alle Mitglieder weg; die Kopie auf diesem Gerät bleibt.")) return;
+  try{
+    const r=await sb.from("stage_plans").delete().eq("id",id).select("id");
+    if(r.error) throw r.error;
+    if(!r.data||!r.data.length) throw new Error("permission denied");
+    store.programs.forEach(q=>{ if(q.cloudId===id){ delete q.cloudId; delete q.cloudAt; } }); saveStore();
+    toast("Aus TPB-App gelöscht"); await cloudLoad();
+  }catch(e){ console.error(e); toast(cloudErr(e)); }
+}
+document.getElementById("cloudBody").addEventListener("click", async e=>{
+  const el=e.target.closest("[data-c]"); if(!el) return;
+  const c=el.getAttribute("data-c"), L=cloud.login;
+  if(c==="code-req"){
+    const em=(document.getElementById("cEmail").value||"").trim().toLowerCase(); L.email=em; L.err="";
+    if(!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(em)){ L.err="Bitte eine gültige E-Mail-Adresse eingeben."; renderCloud(); return; }
+    const r=await sb.auth.signInWithOtp({email:em,options:{shouldCreateUser:true}});
+    if(r.error){ const m=r.error.message||""; L.err=/rate|429|seconds/i.test(m)?"Bitte eine Minute warten und dann neu anfordern.":/freigeschaltet|Database error|not allowed|signups/i.test(m)?"Für diese Adresse ist kein Zugang freigeschaltet.":"Der Code konnte nicht verschickt werden."; }
+    else L.step="code";
+    renderCloud();
+  } else if(c==="code-ok"){
+    const code=(document.getElementById("cCode").value||"").replace(/\D/g,""); L.err="";
+    if(code.length<6){ L.err="Bitte den Code aus der E-Mail eingeben."; renderCloud(); return; }
+    const r=await sb.auth.verifyOtp({email:L.email,token:code,type:"email"});
+    if(r.error){ L.err="Der Code stimmt nicht oder ist abgelaufen."; renderCloud(); return; }
+    cloud.login={step:"email",email:"",err:""}; await cloudLoad();
+  } else if(c==="code-back"){ L.step="email"; L.err=""; renderCloud(); }
+  else if(c==="logout"){ await sb.auth.signOut(); cloud.state="login"; cloud.me=null; renderCloud(); }
+  else if(c==="reload"){ await cloudLoad(); }
+  else if(c==="save"){ cloudSave(false); }
+  else if(c==="save-new"){ cloudSave(true); }
+  else if(c==="open"){ cloudOpen(el.getAttribute("data-id")); }
+  else if(c==="del"){ cloudDelete(el.getAttribute("data-id")); }
+});
+document.getElementById("cloudBtn").onclick=()=>{ openSheet("cloudSheet"); renderCloud(); if(sb && cloud.state!=="login") cloudLoad(); };
+
 /* ---------- boot ---------- */
 loadStore();
 if(!current() && store.programs.length) store.currentId=store.programs[0].id;
 if(!current()) newProgram("Aufstellung 1",true);
 renderAll();
 if(memFallback){ setTimeout(()=>toast("Hinweis: Speichern im Browser nicht möglich – nutze „Sichern (Datei)“"),800); }
+cloudInit();
 </script>
 </body>
 </html>
