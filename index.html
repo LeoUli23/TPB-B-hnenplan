@@ -8,9 +8,9 @@
 <meta name="apple-mobile-web-app-title" content="Bühnenplan">
 <meta name="theme-color" content="#15171c">
 <title>Bühnenplaner — Philharmonic Brass</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/dist/umd/supabase.js"></script>
+<script src="bibliothek/jspdf-2.5.1.umd.min.js"></script>
+<script src="bibliothek/pdf-3.11.174.min.js"></script>
+<script src="bibliothek/supabase-2.117.3.js"></script>
 <style>
   :root{
     --ink:#15171c; --ink2:#1e2128; --ink3:#272b34; --line:#363b46;
@@ -1003,7 +1003,7 @@ document.getElementById("closeStage").onclick=closeSheets;
 
 /* ---------- Background plan import (PDF / image) ---------- */
 if(window.pdfjsLib){
-  pdfjsLib.GlobalWorkerOptions.workerSrc="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+  pdfjsLib.GlobalWorkerOptions.workerSrc=new URL("bibliothek/pdf.worker-3.11.174.min.js",location.href).href;
 }
 function updateBgUI(){
   const p=current(); const has=!!(p.bg&&p.bg.data);
