@@ -1,0 +1,72 @@
+# Release-Prüfung bei jedem Pull Request nach main (F-036): Bühnenplaner mit gemeinsamen Aufstellungen,
+# PDF-Bibliotheken und "kein Abruf bei fremden Servern" (23 Prüfungen, Skript buehnen-test.js).
+# Die Prüfskripte liegen im privaten Repository TPB-Backup (Ordner app-werkzeug) und werden mit einem
+# Lese-Token geholt (Geheimwert TPB_BACKUP_LESEN, nur "Contents: Read" auf TPB-Backup, von Leo angelegt).
+# Bewusst "pull_request", nicht "pull_request_target": Pull Requests aus fremden Kopien bekommen keine Geheimwerte.
+name: Release-Prüfung
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-pruefung-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pruefung:
+    name: Release Prüfung
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      TPB_BACKUP_LESEN: ${{ secrets.TPB_BACKUP_LESEN }}
+      BUEHNE_DIR: ${{ github.workspace }}/buehne
+    steps:
+      - name: Zugang zu den Prüfskripten prüfen
+        run: |
+          if [ -z "$TPB_BACKUP_LESEN" ]; then
+            echo "::error title=Geheimwert fehlt::TPB_BACKUP_LESEN ist nicht gesetzt (Settings → Secrets and variables → Actions). Bei Pull Requests aus fremden Kopien ist das gewollt: dort laufen die Prüfungen nicht."
+            exit 1
+          fi
+
+      - name: Bühnenplaner holen (Stand des Pull Requests)
+        uses: actions/checkout@v4
+        with:
+          path: buehne
+          persist-credentials: false
+
+      - name: Prüfskripte holen (TPB-Backup, nur app-werkzeug)
+        uses: actions/checkout@v4
+        with:
+          repository: LeoUli23/TPB-Backup
+          token: ${{ secrets.TPB_BACKUP_LESEN }}
+          path: werkzeug
+          sparse-checkout: app-werkzeug
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Playwright und Chromium installieren
+        working-directory: werkzeug/app-werkzeug
+        run: |
+          npm install --no-save --no-package-lock playwright@1.56.1
+          npx playwright install --with-deps chromium
+
+      - name: Bühnenplaner-Prüfung
+        working-directory: werkzeug/app-werkzeug/pruefung
+        run: node buehnen-test.js
+
+      - name: Bilder der Prüfung sichern (nur bei Fehler)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pruefung-bilder
+          path: werkzeug/app-werkzeug/pruefung/shots
+          retention-days: 7
+          if-no-files-found: ignore
