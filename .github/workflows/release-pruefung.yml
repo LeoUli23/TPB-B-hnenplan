@@ -1,5 +1,5 @@
 # Release-Prüfung bei jedem Pull Request nach main (F-036): Bühnenplaner mit gemeinsamen Aufstellungen,
-# PDF-Bibliotheken und "kein Abruf bei fremden Servern" (23 Prüfungen, Skript buehnen-test.js).
+# PDF-Bibliotheken und "kein Abruf bei fremden Servern" (27 Prüfungen, Skript buehnen-test.js).
 # Die Prüfskripte liegen im privaten Repository TPB-Backup (Ordner app-werkzeug) und werden mit einem
 # Lese-Token geholt (Geheimwert TPB_BACKUP_LESEN, nur "Contents: Read" auf TPB-Backup, von Leo angelegt).
 # Bewusst "pull_request", nicht "pull_request_target": Pull Requests aus fremden Kopien bekommen keine Geheimwerte.

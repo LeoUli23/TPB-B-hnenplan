@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<!-- Schutzkopf (A8): Skripte, Bilder und Schriften nur aus diesem Ordner, Verbindungen nur zu Supabase; ein eingeschleuster Befehl kann nichts an fremde Server schicken -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self' https://vibrpjzjwpzifpljjukp.supabase.co wss://vibrpjzjwpzifpljjukp.supabase.co; worker-src 'self' blob:; manifest-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Bühnenplan">
@@ -484,10 +486,48 @@ let memFallback = false;
 
 function uid(){return Date.now().toString(36)+Math.random().toString(36).slice(2,7);}
 
+/* A8 (Härtungsplan): Alles, was aus der TPB-App, einer Datei oder dem Gerätespeicher kommt, wird beim Laden gesäubert:
+   Texte bleiben Text (gekürzt), Zahlenfelder werden Zahlen, Farbe und Typ nur aus den bekannten Listen,
+   Hintergrund nur als eingebettetes Bild. Angezeigt wird zusätzlich überall maskiert (escH bzw. textContent). */
+function zahl(v,std,min,max){ v=+v; if(!isFinite(v)) v=std; return Math.min(max,Math.max(min,v)); }
+function textFeld(v,std,max){ v=(typeof v==="string"||typeof v==="number")?String(v):""; v=v.replace(/[\u0000-\u001f\u007f]/g," ").trim().slice(0,max); return v||std; }
+function kennung(v){ return (typeof v==="string"&&/^[A-Za-z0-9_-]{1,64}$/.test(v))?v:uid(); }
+function saubereItems(arr){
+  const ids=new Set();
+  return (Array.isArray(arr)?arr:[]).filter(i=>i&&typeof i==="object").slice(0,500).map(i=>{
+    const type=(typeof i.type==="string"&&(i.type==="custom"||Object.prototype.hasOwnProperty.call(CATALOG,i.type)))?i.type:"custom";
+    let id=kennung(i.id); if(ids.has(id)) id=uid(); ids.add(id);
+    return { id, type, label:textFeld(i.label,"Position",80),
+      w:zahl(i.w,50,10,3000), d:zahl(i.d,40,10,3000), rot:zahl(i.rot,0,-360,360),
+      color:(typeof i.color==="string"&&/^--c-[a-z0-9-]{1,24}$/.test(i.color))?i.color:"--c-misc",
+      x:zahl(i.x,0,0,20000), y:zahl(i.y,0,0,20000) };
+  });
+}
+function sauberesBild(v){ return (typeof v==="string"&&/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+\/=]+$/.test(v))?v:null; }
+function sauberesProgramm(p){
+  if(!p||typeof p!=="object") return null;
+  const n={ id:kennung(p.id), name:textFeld(p.name,"Aufstellung",120),
+    stageW:zahl(p.stageW,1400,100,20000), stageD:zahl(p.stageD,1000,100,20000),
+    snap:p.snap!==false, items:saubereItems(p.items) };
+  if(typeof p.showGrid==="boolean") n.showGrid=p.showGrid;
+  const bild=p.bg&&typeof p.bg==="object"?sauberesBild(p.bg.data):null;
+  if(bild) n.bg={data:bild, opacity:zahl(p.bg.opacity,1,0,1)};
+  if(typeof p.cloudId==="string"&&/^[0-9a-f-]{36}$/i.test(p.cloudId)) n.cloudId=p.cloudId;
+  if(typeof p.cloudProject==="string"&&/^[0-9a-f-]{36}$/i.test(p.cloudProject)) n.cloudProject=p.cloudProject;
+  if(typeof p.cloudAt==="string") n.cloudAt=p.cloudAt.slice(0,40);
+  return n;
+}
+function sauber(d){
+  const progs=(d&&Array.isArray(d.programs)?d.programs:[]).map(sauberesProgramm).filter(Boolean).slice(0,200);
+  const ids=new Set(); progs.forEach(p=>{ if(ids.has(p.id)) p.id=uid(); ids.add(p.id); });
+  const cur=(d&&typeof d.currentId==="string"&&ids.has(d.currentId))?d.currentId:(progs[0]?progs[0].id:null);
+  return {programs:progs, currentId:cur};
+}
+
 function loadStore(){
   try{
     const raw = localStorage.getItem(LS_KEY);
-    if(raw){ store = JSON.parse(raw); return; }
+    if(raw){ store = sauber(JSON.parse(raw)); if(store.programs.length) return; }
   }catch(e){ memFallback = true; }
   // first run / no storage
   newProgram("Aufstellung 1", true);
@@ -574,13 +614,13 @@ function renderStage(){
     if(inner){
       el.className="item icon"+(it.id===selId?" sel":"");
       el.innerHTML = svgWrap(it.w, it.d, inner) +
-        '<span class="cap" style="font-size:'+Math.max(8,Math.min(11, dw/9))+'px">'+it.label+'</span>';
+        '<span class="cap" style="font-size:'+Math.max(8,Math.min(11, dw/9))+'px">'+escH(it.label)+'</span>';
     } else {
       el.className="item"+(it.id===selId?" sel":"");
       el.style.background=cssColor(it.color)||"#555";
       const big = Math.min(dw,dh) > 46;
       el.innerHTML = '<span class="ilabel" style="font-size:'+Math.max(8,Math.min(12, dw/8))+'px">'+
-        it.label+'</span>'+ (big? '<span class="dim">'+it.w+'×'+it.d+'</span>':'');
+        escH(it.label)+'</span>'+ (big? '<span class="dim">'+escH(it.w)+'×'+escH(it.d)+'</span>':'');
     }
     stageEl.appendChild(el);
     attachDrag(el, it);
@@ -616,7 +656,7 @@ function renderLegend(){
   let html="";
   const order=[];
   p.items.forEach(it=>{ if(!seen[it.label]){seen[it.label]={n:0,c:it.color};order.push(it.label);} seen[it.label].n++; });
-  order.forEach(l=>{ html+='<span><i class="swatch" style="display:inline-block;background:'+cssColor(seen[l].c)+'"></i>'+seen[l].n+'× '+l+'</span>'; });
+  order.forEach(l=>{ html+='<span><i class="swatch" style="display:inline-block;background:'+escH(cssColor(seen[l].c))+'"></i>'+seen[l].n+'× '+escH(l)+'</span>'; });
   bar.innerHTML=html;
 }
 
@@ -774,7 +814,8 @@ function renderProgList(){
     const row=document.createElement("div");
     row.className="prog-row"+(p.id===store.currentId?" active":"");
     const name=document.createElement("div"); name.className="pn";
-    name.innerHTML=p.name+' <span class="pc">· '+p.items.length+' Pos.</span>';
+    name.textContent=p.name+" ";
+    const pc=document.createElement("span"); pc.className="pc"; pc.textContent="· "+p.items.length+" Pos."; name.appendChild(pc);
     name.onclick=()=>{ store.currentId=p.id; selId=null; saveStore(); renderAll();
       document.getElementById("progName").value=p.name; renderProgList(); };
     const ren=document.createElement("button"); ren.className="mini"; ren.textContent="✎";
@@ -963,7 +1004,7 @@ document.getElementById("fileInput").addEventListener("change",e=>{
   const f=e.target.files[0]; if(!f) return;
   const r=new FileReader();
   r.onload=()=>{ try{ const d=JSON.parse(r.result);
-    if(d&&d.programs){ store=d; if(!current()) store.currentId=store.programs[0]?.id; saveStore(); selId=null; renderAll(); closeSheets(); toast("Geladen"); }
+    if(d&&Array.isArray(d.programs)&&d.programs.length){ store=sauber(d); saveStore(); selId=null; renderAll(); closeSheets(); toast("Geladen"); }
     else toast("Datei nicht erkannt");
   }catch(err){ toast("Fehler beim Laden"); } };
   r.readAsText(f); e.target.value="";
@@ -1195,7 +1236,7 @@ function renderCloud(){
     if(cloud.missing){
       h+='<p class="cerr">Die gemeinsame Ablage ist noch nicht eingerichtet. Deine Aufstellungen bleiben bis dahin auf diesem Gerät.</p>';
     } else if(cloud.canEdit){
-      const opts='<option value="">ohne Projekt</option>'+cloud.projects.map(x=>'<option value="'+x.id+'"'+(p.cloudProject===x.id?' selected':'')+'>'+escH(x.title)+'</option>').join("");
+      const opts='<option value="">ohne Projekt</option>'+cloud.projects.map(x=>'<option value="'+escH(x.id)+'"'+(p.cloudProject===x.id?' selected':'')+'>'+escH(x.title)+'</option>').join("");
       h+='<div class="cat">Aktuelle Aufstellung: '+escH(p.name)+'</div>'+
         '<div class="field"><label for="cProj">Gehört zu Projekt</label><select id="cProj">'+opts+'</select></div>'+
         '<div class="sheet-actions">'+(linked
@@ -1206,8 +1247,8 @@ function renderCloud(){
       h+='<div class="cat">In der TPB-App ('+cloud.plans.length+') · tippen zum Öffnen</div>';
       h+= cloud.plans.length ? cloud.plans.map(x=>{
         const sub=[projTitle(x.project_id), "Stand "+fmtDate(x.updated_at)].filter(Boolean).join(" · ");
-        return '<div class="prog-row'+(p.cloudId===x.id?' active':'')+'"><div class="pn" data-c="open" data-id="'+x.id+'">'+escH(x.title)+'<br><span class="pc">'+escH(sub)+'</span></div>'+
-          (cloud.canEdit?'<button class="mini dl" data-c="del" data-id="'+x.id+'" title="Aus TPB-App löschen">🗑</button>':'')+'</div>';
+        return '<div class="prog-row'+(p.cloudId===x.id?' active':'')+'"><div class="pn" data-c="open" data-id="'+escH(x.id)+'">'+escH(x.title)+'<br><span class="pc">'+escH(sub)+'</span></div>'+
+          (cloud.canEdit?'<button class="mini dl" data-c="del" data-id="'+escH(x.id)+'" title="Aus TPB-App löschen">🗑</button>':'')+'</div>';
       }).join("") : '<p class="cnote">Noch keine Aufstellung in der TPB-App.'+(cloud.canEdit?' Entwirf eine und tippe oben auf „In TPB-App speichern“.':'')+'</p>';
     }
     h+='<div class="sheet-actions"><button class="btn" data-c="reload">Aktualisieren</button><button class="btn" data-c="logout">Abmelden</button></div>';
@@ -1222,14 +1263,15 @@ async function cloudOpen(id, fromLink){
     const d=r.data.data||{};
     let p=store.programs.find(x=>x.cloudId===id);
     if(!p){ p={id:uid(), cloudId:id}; store.programs.push(p); }
-    p.name=r.data.title; p.cloudProject=r.data.project_id||null; p.cloudAt=r.data.updated_at;
-    p.stageW=+d.stageW||1400; p.stageD=+d.stageD||1000; p.snap=d.snap!==false;
-    p.items=Array.isArray(d.items)?d.items:[];
-    if(r.data.background){ p.bg={data:r.data.background, opacity:d.bgOpacity!=null?d.bgOpacity:1}; p.showGrid=d.showGrid===true; }
+    p.name=textFeld(r.data.title,"Aufstellung",120); p.cloudProject=r.data.project_id||null; p.cloudAt=r.data.updated_at;
+    p.stageW=zahl(d.stageW,1400,100,20000); p.stageD=zahl(d.stageD,1000,100,20000); p.snap=d.snap!==false;
+    p.items=saubereItems(d.items);
+    const bild=sauberesBild(r.data.background);
+    if(bild){ p.bg={data:bild, opacity:zahl(d.bgOpacity,1,0,1)}; p.showGrid=d.showGrid===true; }
     else { delete p.bg; p.showGrid=d.showGrid!==false; }
     store.currentId=p.id; selId=null; saveStore(); renderAll();
     if(!fromLink) closeSheets();
-    toast("„"+r.data.title+"“ geöffnet");
+    toast("„"+p.name+"“ geöffnet");
     renderCloud();
   }catch(e){ console.error(e); toast(cloudErr(e)); }
 }

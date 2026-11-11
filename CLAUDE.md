@@ -4,7 +4,7 @@ Bühnenplaner unter https://leouli23.github.io/TPB-B-hnenplan/: eine Seite (`ind
 
 ## Prüfung
 
-Die Prüfskripte liegen im privaten Repository TPB-Backup (`app-werkzeug/pruefung/buehnen-test.js`, 23 Prüfungen; Pfad zu diesem Repository in `BUEHNE_DIR`). Sie laufen bei jedem Pull Request als „Release Prüfung“, dazu Gitleaks (`.gitleaks.toml`). Geprüft werden auch: kein Abruf bei fremden Servern, 375 px ohne seitliches Scrollen.
+Die Prüfskripte liegen im privaten Repository TPB-Backup (`app-werkzeug/pruefung/buehnen-test.js`, 27 Prüfungen; Pfad zu diesem Repository in `BUEHNE_DIR`). Sie laufen bei jedem Pull Request als „Release Prüfung“, dazu Gitleaks (`.gitleaks.toml`). Geprüft werden auch: kein Abruf bei fremden Servern, 375 px ohne seitliches Scrollen.
 
 ## Regeln
 
